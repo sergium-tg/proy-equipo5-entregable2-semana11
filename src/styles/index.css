@@ -1,0 +1,14 @@
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { --bg: #f8f7f6; }
+body { background-color: var(--bg); }
+.glass { @apply bg-white/70 backdrop-blur-md shadow-soft rounded-2xl; }
+.btn { @apply inline-flex items-center justify-center rounded-2xl px-4 py-2 font-medium transition-all shadow-soft focus:outline-none focus:ring-2 focus:ring-coffee-300; }
+.btn-primary { @apply bg-coffee-600 text-white hover:bg-coffee-700; }
+.btn-ghost { @apply bg-white/70 text-coffee-700 hover:bg-white; }
+.input { @apply rounded-2xl border border-coffee-200 px-4 py-2 bg-white/70 focus:outline-none focus:ring-2 focus:ring-coffee-300; }
+.card { @apply glass p-5; }
+h1.page { @apply text-2xl font-semibold text-coffee-900; }

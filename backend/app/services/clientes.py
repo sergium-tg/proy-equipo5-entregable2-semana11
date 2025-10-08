@@ -1,83 +1,93 @@
 # backend/app/services/clientes.py
-from typing import List, Tuple, Union
-from sqlmodel import select, Session
-from app.db.session import get_engine
-from app.models.models import Cliente as ClienteORM, Orden as OrdenORM
-from app.models.schemas import Cliente, CrearCliente, UpdateCliente
+#Antes: los datos vivían solo en memoria (se perdían al reiniciar)y ahora: la DB (SQLite) guarda los datos en app.db, sobrevivientes a reinicios.
 
-engine = get_engine()
+from typing import List, Tuple, Union
+from sqlmodel import select
+from app.models.schemas import Cliente as ClienteSchema, CrearCliente, UpdateCliente
+from app.models.models import Cliente as ClienteModel, Orden as OrdenModel
+from app.db.session import get_engine
+from sqlmodel import Session
 
 class ClienteService:
     @staticmethod
-    def create_cliente(payload: CrearCliente) -> Cliente | None:
+    def create_cliente(payload: CrearCliente) -> Union[dict, None]:
+        engine = get_engine()
         with Session(engine) as session:
-            existing = session.get(ClienteORM, payload.id)
+            # Verifica existencia por PK
+            existing = session.get(ClienteModel, payload.id)
             if existing:
                 return None
-            cliente = ClienteORM(**payload.model_dump())
+            # Crear instancia ORM
+            cliente = ClienteModel(**payload.model_dump())
             session.add(cliente)
             session.commit()
             session.refresh(cliente)
-            return Cliente(**cliente.dict())
+            # devolver dict compatible con response_model (schemas.Cliente)
+            return cliente.dict()
 
     @staticmethod
-    def get_all_clientes() -> List[Cliente]:
+    def get_all_clientes() -> List[dict]:
+        engine = get_engine()
         with Session(engine) as session:
-            rows = session.exec(select(ClienteORM)).all()
-            return [Cliente(**r.dict()) for r in rows]
+            results = session.exec(select(ClienteModel)).all()
+            # Convertir a lista de dicts (sin relaciones)
+            return [r.dict() for r in results]
 
     @staticmethod
-    def get_cliente_by_id(cliente_id: int) -> Union[Cliente, None]:
+    def get_cliente_by_id(cliente_id: int) -> Union[dict, None]:
+        engine = get_engine()
         with Session(engine) as session:
-            c = session.get(ClienteORM, cliente_id)
-            if not c:
+            cliente = session.get(ClienteModel, cliente_id)
+            if not cliente:
                 return None
-            # cargar ordenes relacionadas
-            # usaremos la representación de schemas: construir Ordens desde ORM
-            c_dict = c.dict()
-            # No incluimos `ordenes` como objetos ORM complejos; pydantic espera lista de Orden dicts
-            c_dict["ordenes"] = [o.dict() for o in c.ordenes] if c.ordenes else []
-            return Cliente(**c_dict)
+            return cliente.dict()
 
     @staticmethod
-    def update_cliente(cliente_id: int, payload: UpdateCliente) -> Union[Cliente, int, None]:
+    def update_cliente(cliente_id: int, cliente_data: UpdateCliente) -> Union[dict, int, None]:
+        engine = get_engine()
         with Session(engine) as session:
-            c = session.get(ClienteORM, cliente_id)
-            if not c:
+            cliente = session.get(ClienteModel, cliente_id)
+            if not cliente:
                 return None
-            update_data = payload.model_dump(exclude_unset=True)
-            if not update_data:
+            actualizar = cliente_data.model_dump(exclude_unset=True, exclude={"id"})
+            if not actualizar:
                 return 304
-            for k, v in update_data.items():
-                setattr(c, k, v)
-            session.add(c)
+            for k, v in actualizar.items():
+                setattr(cliente, k, v)
+            session.add(cliente)
             session.commit()
-            session.refresh(c)
-            c_dict = c.dict()
-            c_dict["ordenes"] = [o.dict() for o in c.ordenes] if c.ordenes else []
-            return Cliente(**c_dict)
+            session.refresh(cliente)
+            return cliente.dict()
 
     @staticmethod
     def delete_cliente(cliente_id: int) -> Union[bool, None]:
+        engine = get_engine()
         with Session(engine) as session:
-            c = session.get(ClienteORM, cliente_id)
-            if not c:
+            cliente = session.get(ClienteModel, cliente_id)
+            if not cliente:
                 return None
-            if c.ordenes:
+            # verificar si tiene órdenes asociadas
+            ordenes = session.exec(select(OrdenModel).where(OrdenModel.id_cliente == cliente_id)).all()
+            if ordenes:
                 return False
-            session.delete(c)
+            session.delete(cliente)
             session.commit()
             return True
 
     @staticmethod
-    def search_and_sort_clientes(q: str | None, sort: str, order: str, offset: int, limit: int) -> Tuple[List[Cliente], int]:
+    def search_and_sort_clientes(q: str, sort: str, order: str, offset: int, limit: int) -> Tuple[List[dict], int]:
+        """
+        Implementación simple: traemos todos y filtramos en Python.
+        (fácil y fiable; si tu base crece cambiamos a filtros SQL).
+        """
+        engine = get_engine()
         with Session(engine) as session:
-            stmt = select(ClienteORM)
+            results = session.exec(select(ClienteModel)).all()
             if q:
-                stmt = stmt.where((ClienteORM.nombre.contains(q)) | (ClienteORM.apellido.contains(q)))
-            order_col = getattr(ClienteORM, sort)
-            stmt = stmt.order_by(order_col.asc() if order == "asc" else order_col.desc())
-            all_rows = session.exec(stmt).all()
-            total = len(all_rows)
-            rows = all_rows[offset: offset + limit]
-            return [Cliente(**{**r.dict(), "ordenes": [o.dict() for o in r.ordenes]}) for r in rows], total
+                q_lower = q.lower()
+                results = [c for c in results if q_lower in c.nombre.lower() or q_lower in c.apellido.lower()]
+            if sort:
+                results = sorted(results, key=lambda c: getattr(c, sort).lower(), reverse=(order=="desc"))
+            total = len(results)
+            page = results[offset: offset + limit]
+            return [c.dict() for c in page], total

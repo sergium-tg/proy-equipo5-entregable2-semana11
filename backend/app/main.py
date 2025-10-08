@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-# Asumiendo que app.core.config existe
+from fastapi import FastAPI
+from app.core.config import ALLOWED_ORIGINS
 try:
     from app.core.config import ALLOWED_ORIGINS 
 except ImportError:
@@ -30,7 +31,12 @@ app.include_router(mantenimientos_router.router)
 app.include_router(tecnicos_router.router)
 app.include_router(mtoTecnicos_router.router)
 
-# Importación de servicios para inicializar datos en memoria
-from app.services import bases
-# La inicialización de los datos de prueba ocurre al importar bases.py
-# y bases._initialize_consecutives() se ejecuta al final.
+
+#Se reemplaza la importación antigua in-memory por init_db ---
+# from app.services import bases    # <-- Version antigua
+
+from app.db.init_db import init_db
+
+@app.on_event("startup")
+def on_startup():
+    init_db()

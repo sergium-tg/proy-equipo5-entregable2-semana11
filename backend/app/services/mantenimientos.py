@@ -1,84 +1,88 @@
+# backend/app/services/mantenimientos.py
 from typing import List, Union, Tuple
+from sqlmodel import select, Session, func
+from app.db.session import get_engine
+from app.models.models import Mantenimiento as MantenimientoORM, Orden as OrdenORM, MtoTecnico as MtoTecnicoORM
 from app.models.schemas import Mantenimiento, CrearMantenimiento, UpdateMantenimiento
-from app.services.bases import db_ordenes, db_mantenimientos, db_mtoTecs, nuevo_numero
+
+engine = get_engine()
+
+def get_next_mto_numero(session: Session) -> int:
+    res = session.exec(select(func.max(MantenimientoORM.numero))).one()
+    max_val = res or 0
+    return max_val + 1
 
 class MantenimientoService:
     @staticmethod
     def create_mantenimiento(payload: CrearMantenimiento) -> Union[Mantenimiento, None]:
-        if payload.consecutivo_orden not in db_ordenes:
-            return None
-        mantenimiento = Mantenimiento(
-            numero=nuevo_numero(),
-            tipo=payload.tipo,
-            descripcion=payload.descripcion,
-            apertura=payload.apertura,
-            precio=payload.precio,
-            consecutivo_orden=payload.consecutivo_orden
-        )
-        db_mantenimientos[mantenimiento.numero] = mantenimiento
-        orden_existente = db_ordenes[payload.consecutivo_orden]
-        orden_existente.mantenimientos.append(mantenimiento)
-        return mantenimiento
+        with Session(engine) as session:
+            orden = session.get(OrdenORM, payload.consecutivo_orden)
+            if not orden:
+                return None
+            numero = get_next_mto_numero(session)
+            mto = MantenimientoORM(
+                numero=numero,
+                tipo=payload.tipo,
+                descripcion=payload.descripcion,
+                apertura=payload.apertura,
+                precio=payload.precio,
+                consecutivo_orden=payload.consecutivo_orden
+            )
+            session.add(mto)
+            session.commit()
+            session.refresh(mto)
+            return Mantenimiento(**mto.dict())
 
     @staticmethod
     def get_all_mantenimientos() -> List[Mantenimiento]:
-        return list(db_mantenimientos.values())
-        
+        with Session(engine) as session:
+            rows = session.exec(select(MantenimientoORM)).all()
+            return [Mantenimiento(**r.dict()) for r in rows]
+
     @staticmethod
-    def update_mantenimiento(mto_numero: int, mto_data: UpdateMantenimiento) -> Union[Mantenimiento, int, bool, None]:
-        mto = db_mantenimientos.get(mto_numero)
-        if not mto:
-            return None
-        orden_anterior = mto.consecutivo_orden
-        actualizar = mto_data.model_dump(exclude_unset=True)
-        if not actualizar:
-            return
-        if 'cierre' in actualizar and actualizar['cierre'] is not None and mto.apertura >= actualizar['cierre']:
-            return False
-        if 'consecutivo_orden' in actualizar:
-            consecutivo_orden_a_validar = actualizar['consecutivo_orden']
-            if consecutivo_orden_a_validar != orden_anterior:
-                orden_nueva = db_ordenes.get(consecutivo_orden_a_validar)
-                if not orden_nueva:
-                    return f"Orden con CONSECUTIVO '{consecutivo_orden_a_validar}' no fue encontrado" # Retorna str para 404
-                orden_original = db_ordenes.get(orden_anterior)
-                if orden_original:
-                    orden_original.mantenimientos = [m for m in orden_original.mantenimientos if m.numero != mto_numero]
-                mto.consecutivo_orden = consecutivo_orden_a_validar
-                orden_nueva.mantenimientos.append(mto)
-        for campo, valor in actualizar.items():
-            setattr(mto, campo, valor)
-            
-        return mto
+    def update_mantenimiento(mto_numero: int, mto_data: UpdateMantenimiento) -> Union[Mantenimiento, int, bool, None, str]:
+        with Session(engine) as session:
+            mto = session.get(MantenimientoORM, mto_numero)
+            if not mto:
+                return None
+            actualizar = mto_data.model_dump(exclude_unset=True)
+            if not actualizar:
+                return 304
+            if 'cierre' in actualizar and actualizar['cierre'] is not None and mto.apertura >= actualizar['cierre']:
+                return False
+            if 'consecutivo_orden' in actualizar:
+                nueva = session.get(OrdenORM, actualizar['consecutivo_orden'])
+                if not nueva:
+                    return f"Orden con CONSECUTIVO '{actualizar['consecutivo_orden']}' no fue encontrado"
+                mto.consecutivo_orden = actualizar['consecutivo_orden']
+            for k, v in actualizar.items():
+                setattr(mto, k, v)
+            session.add(mto)
+            session.commit()
+            session.refresh(mto)
+            return Mantenimiento(**mto.dict())
 
     @staticmethod
     def delete_mantenimiento(mto_numero: int) -> Union[bool, None]:
-        mto = db_mantenimientos.get(mto_numero)
-        if not mto:
-            return None
-        tiene_tecnicos = any(mto_num == mto_numero for (mto_num, _) in db_mtoTecs.keys())
-        if tiene_tecnicos:
-            return False
-        orden = db_ordenes.get(mto.consecutivo_orden)
-        if orden:
-            orden.mantenimientos = [m for m in orden.mantenimientos if m.numero != mto_numero]            
-        del db_mantenimientos[mto_numero]
-        return True
-    
+        with Session(engine) as session:
+            mto = session.get(MantenimientoORM, mto_numero)
+            if not mto:
+                return None
+            # Si tiene técnicos asociados
+            has_tec = session.exec(select(MtoTecnicoORM).where(MtoTecnicoORM.numero_mantenimiento == mto_numero)).first()
+            if has_tec:
+                return False
+            session.delete(mto)
+            session.commit()
+            return True
+
     @staticmethod
-    def search_and_sort_mantenimientos(q: str, order: str, offset: int, limit: int) -> Tuple[List[Mantenimiento], int]:
-        results = list(db_mantenimientos.values())     
-        if q:
-            q_lower = q.lower()
-            results = [
-                m for m in results 
-                if q_lower in m.descripcion.lower()
-            ]
-        es_reversa = (order == "desc") 
-        results = sorted(
-            results, 
-            key=lambda m: m.descripcion.lower(),
-            reverse=es_reversa
-        )
-        total = len(results)
-        return results[offset: offset + limit], total
+    def search_and_sort_mantenimientos(q: str | None, order: str, offset: int, limit: int) -> Tuple[List[Mantenimiento], int]:
+        with Session(engine) as session:
+            stmt = select(MantenimientoORM)
+            if q:
+                stmt = stmt.where(MantenimientoORM.descripcion.contains(q))
+            all_rows = session.exec(stmt).all()
+            total = len(all_rows)
+            rows = sorted(all_rows, key=lambda m: (m.descripcion or "").lower(), reverse=(order == "desc"))
+            return [Mantenimiento(**r.dict()) for r in rows[offset: offset + limit]], total

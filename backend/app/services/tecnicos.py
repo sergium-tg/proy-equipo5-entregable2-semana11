@@ -1,60 +1,75 @@
+# backend/app/services/tecnicos.py
 from typing import List, Union, Tuple
+from sqlmodel import select, Session
+from app.db.session import get_engine
+from app.models.models import Tecnico as TecnicoORM, MtoTecnico as MtoTecnicoORM
 from app.models.schemas import Tecnico, CrearTecnico, UpdateTecnico
-from app.services.bases import db_tecnicos, db_mtoTecs
+
+engine = get_engine()
 
 class TecnicoService:
     @staticmethod
     def create_tecnico(payload: CrearTecnico) -> Union[Tecnico, None]:
-        if payload.id in db_tecnicos:
-            return None        
-        tecnico = Tecnico(**payload.model_dump())
-        db_tecnicos[tecnico.id] = tecnico
-        return tecnico
+        with Session(engine) as session:
+            existing = session.get(TecnicoORM, payload.id)
+            if existing:
+                return None
+            t = TecnicoORM(**payload.model_dump())
+            session.add(t)
+            session.commit()
+            session.refresh(t)
+            return Tecnico(**t.dict())
 
     @staticmethod
     def get_all_tecnicos() -> List[Tecnico]:
-        return list(db_tecnicos.values())
+        with Session(engine) as session:
+            rows = session.exec(select(TecnicoORM)).all()
+            return [Tecnico(**r.dict()) for r in rows]
 
     @staticmethod
     def get_tecnico_by_id(tecnico_id: int) -> Union[Tecnico, None]:
-        return db_tecnicos.get(tecnico_id)
+        with Session(engine) as session:
+            t = session.get(TecnicoORM, tecnico_id)
+            if not t:
+                return None
+            return Tecnico(**t.dict())
 
     @staticmethod
     def update_tecnico(tecnico_id: int, tecnico_data: UpdateTecnico) -> Union[Tecnico, int, None]:
-        if tecnico_id not in db_tecnicos:
-            return None
-        tecnico_existente = db_tecnicos[tecnico_id]
-        dato = tecnico_data.model_dump(exclude_unset=True) 
-        if not dato:
-            return 304
-        updated_tecnico = tecnico_existente.model_copy(update=dato)
-        db_tecnicos[tecnico_id] = updated_tecnico
-        return updated_tecnico
+        with Session(engine) as session:
+            t = session.get(TecnicoORM, tecnico_id)
+            if not t:
+                return None
+            update = tecnico_data.model_dump(exclude_unset=True)
+            if not update:
+                return 304
+            for k, v in update.items():
+                setattr(t, k, v)
+            session.add(t)
+            session.commit()
+            session.refresh(t)
+            return Tecnico(**t.dict())
 
     @staticmethod
     def delete_tecnico(tecnico_id: int) -> Union[bool, None]:
-        if tecnico_id not in db_tecnicos:
-            return None
-        tiene_asignaciones = any(tec_id == tecnico_id for (_, tec_id) in db_mtoTecs.keys()) 
-        if tiene_asignaciones:
-            return False   
-        del db_tecnicos[tecnico_id]
-        return True
+        with Session(engine) as session:
+            t = session.get(TecnicoORM, tecnico_id)
+            if not t:
+                return None
+            has_assign = session.exec(select(MtoTecnicoORM).where(MtoTecnicoORM.id_tecnico == tecnico_id)).first()
+            if has_assign:
+                return False
+            session.delete(t)
+            session.commit()
+            return True
 
     @staticmethod
-    def search_and_sort_tecnicos(q: str, sort: str, order: str, offset: int, limit: int) -> Tuple[List[Tecnico], int]:
-        results = list(db_tecnicos.values())
-        if q:
-            q = q.lower()
-            results = [
-                t for t in results
-                if q in t.nombre.lower() or q in t.apellido.lower()
-            ]
-        if sort:
-            results = sorted(
-                results,
-                key=lambda t: getattr(t, sort).lower(),
-                reverse=(order == "desc")
-            )
-        total = len(results)
-        return results[offset: offset + limit], total
+    def search_and_sort_tecnicos(q: str | None, sort: str, order: str, offset: int, limit: int) -> Tuple[List[Tecnico], int]:
+        with Session(engine) as session:
+            stmt = select(TecnicoORM)
+            if q:
+                stmt = stmt.where((TecnicoORM.nombre.contains(q)) | (TecnicoORM.apellido.contains(q)))
+            rows = session.exec(stmt).all()
+            rows_sorted = sorted(rows, key=lambda t: getattr(t, sort).lower(), reverse=(order == "desc"))
+            total = len(rows_sorted)
+            return [Tecnico(**r.dict()) for r in rows_sorted[offset: offset + limit]], total

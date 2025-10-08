@@ -1,61 +1,83 @@
-from typing import List, Dict, Any, Union, Tuple
+# backend/app/services/clientes.py
+from typing import List, Tuple, Union
+from sqlmodel import select, Session
+from app.db.session import get_engine
+from app.models.models import Cliente as ClienteORM, Orden as OrdenORM
 from app.models.schemas import Cliente, CrearCliente, UpdateCliente
-from app.services.bases import db_clientes, db_ordenes
+
+engine = get_engine()
 
 class ClienteService:
     @staticmethod
-    def create_cliente(payload: CrearCliente) -> Cliente:
-        if payload.id in db_clientes:
-            return None
-        cliente = Cliente(**payload.model_dump())
-        db_clientes[cliente.id] = cliente
-        return cliente
+    def create_cliente(payload: CrearCliente) -> Cliente | None:
+        with Session(engine) as session:
+            existing = session.get(ClienteORM, payload.id)
+            if existing:
+                return None
+            cliente = ClienteORM(**payload.model_dump())
+            session.add(cliente)
+            session.commit()
+            session.refresh(cliente)
+            return Cliente(**cliente.dict())
 
     @staticmethod
     def get_all_clientes() -> List[Cliente]:
-        return list(db_clientes.values())
+        with Session(engine) as session:
+            rows = session.exec(select(ClienteORM)).all()
+            return [Cliente(**r.dict()) for r in rows]
 
     @staticmethod
     def get_cliente_by_id(cliente_id: int) -> Union[Cliente, None]:
-        return db_clientes.get(cliente_id)
+        with Session(engine) as session:
+            c = session.get(ClienteORM, cliente_id)
+            if not c:
+                return None
+            # cargar ordenes relacionadas
+            # usaremos la representación de schemas: construir Ordens desde ORM
+            c_dict = c.dict()
+            # No incluimos `ordenes` como objetos ORM complejos; pydantic espera lista de Orden dicts
+            c_dict["ordenes"] = [o.dict() for o in c.ordenes] if c.ordenes else []
+            return Cliente(**c_dict)
 
     @staticmethod
-    def update_cliente(cliente_id: int, cliente_data: UpdateCliente) -> Union[Cliente, int, None]:
-        if cliente_id not in db_clientes:
-            return None
-        cliente_existente = db_clientes[cliente_id]
-        actualizar_data = cliente_data.model_dump(exclude_unset=True, exclude={'id', 'ordenes'})
-        if not actualizar_data:
-            return 304
-        updated_cliente = cliente_existente.model_copy(update=actualizar_data)
-        updated_cliente.ordenes = cliente_existente.ordenes 
-        db_clientes[cliente_id] = updated_cliente
-        return updated_cliente
+    def update_cliente(cliente_id: int, payload: UpdateCliente) -> Union[Cliente, int, None]:
+        with Session(engine) as session:
+            c = session.get(ClienteORM, cliente_id)
+            if not c:
+                return None
+            update_data = payload.model_dump(exclude_unset=True)
+            if not update_data:
+                return 304
+            for k, v in update_data.items():
+                setattr(c, k, v)
+            session.add(c)
+            session.commit()
+            session.refresh(c)
+            c_dict = c.dict()
+            c_dict["ordenes"] = [o.dict() for o in c.ordenes] if c.ordenes else []
+            return Cliente(**c_dict)
 
     @staticmethod
-    def delete_cliente(cliente_id: int) -> bool:
-        if cliente_id not in db_clientes:
-            return None
-        cliente = db_clientes[cliente_id]
-        if cliente.ordenes:
-            return False
-        del db_clientes[cliente_id]
-        return True
+    def delete_cliente(cliente_id: int) -> Union[bool, None]:
+        with Session(engine) as session:
+            c = session.get(ClienteORM, cliente_id)
+            if not c:
+                return None
+            if c.ordenes:
+                return False
+            session.delete(c)
+            session.commit()
+            return True
 
     @staticmethod
-    def search_and_sort_clientes(q: str, sort: str, order: str, offset: int, limit: int) -> Tuple[List[Cliente], int]:
-        results = list(db_clientes.values())
-        if q:
-            q = q.lower()
-            results = [
-                c for c in results 
-                if q in c.nombre.lower() or q in c.apellido.lower()
-            ]
-        if sort:
-            results = sorted(
-                results, 
-                key=lambda c: getattr(c, sort).lower(),
-                reverse=(order == "desc")
-            )
-        total = len(results)
-        return results[offset: offset + limit], total
+    def search_and_sort_clientes(q: str | None, sort: str, order: str, offset: int, limit: int) -> Tuple[List[Cliente], int]:
+        with Session(engine) as session:
+            stmt = select(ClienteORM)
+            if q:
+                stmt = stmt.where((ClienteORM.nombre.contains(q)) | (ClienteORM.apellido.contains(q)))
+            order_col = getattr(ClienteORM, sort)
+            stmt = stmt.order_by(order_col.asc() if order == "asc" else order_col.desc())
+            all_rows = session.exec(stmt).all()
+            total = len(all_rows)
+            rows = all_rows[offset: offset + limit]
+            return [Cliente(**{**r.dict(), "ordenes": [o.dict() for o in r.ordenes]}) for r in rows], total

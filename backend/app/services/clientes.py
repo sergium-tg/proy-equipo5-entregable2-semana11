@@ -24,14 +24,23 @@ class ClienteService:
             session.refresh(cliente)
             # devolver dict compatible con response_model (schemas.Cliente)
             return cliente.dict()
-
+        
     @staticmethod
     def get_all_clientes() -> List[dict]:
         engine = get_engine()
         with Session(engine) as session:
-            results = session.exec(select(ClienteModel)).all()
-            # Convertir a lista de dicts (sin relaciones)
-            return [r.dict() for r in results]
+            clientes = session.exec(select(ClienteModel)).all()
+            out = []
+            for c in clientes:
+                # obtener ordenes asociadas
+                ordenes = session.exec(
+                    select(OrdenModel).where(OrdenModel.id_cliente == c.id)
+                ).all()
+                # cada orden convertir a dict y si quieres incluir mantenimientos, hay que consultarlos también
+                c_dict = c.dict()
+                c_dict["ordenes"] = [o.dict() for o in ordenes]
+                out.append(c_dict)
+            return out
 
     @staticmethod
     def get_cliente_by_id(cliente_id: int) -> Union[dict, None]:
@@ -40,7 +49,12 @@ class ClienteService:
             cliente = session.get(ClienteModel, cliente_id)
             if not cliente:
                 return None
-            return cliente.dict()
+            ordenes = session.exec(
+                select(OrdenModel).where(OrdenModel.id_cliente == cliente_id)
+            ).all()
+            c_dict = cliente.dict()
+            c_dict["ordenes"] = [o.dict() for o in ordenes]
+            return c_dict
 
     @staticmethod
     def update_cliente(cliente_id: int, cliente_data: UpdateCliente) -> Union[dict, int, None]:

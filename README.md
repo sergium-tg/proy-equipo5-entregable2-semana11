@@ -9,8 +9,11 @@ Administradores internos: personal de la empresa encargado de registrar ventas, 
 
 ## Casos de uso principales
 - Registrar y actualizar inventario (radiadores, compresores, válvulas, mangueras, condensadores).
-- Controlar ventas y salidas de repuestos.
+ Controlar ventas y salidas de repuestos.
 - Consultar stock en tiempo real.
+- Gestionar Órdenes de Servicio y Mantenimientos (Preventivos/Correctivos).
+- Administrar la base de datos de Técnicos y sus asignaciones.
+-Registrar Clientes y sus datos de contacto.
 
 ## Objetivos 
 - Centralizar la gestión de inventario y servicios.
